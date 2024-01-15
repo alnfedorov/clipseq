@@ -4,13 +4,13 @@ include { UMITOOLS_DEDUP } from '../../modules/nf-core/umitools/dedup/main'
 include { SAMTOOLS_INDEX } from '../../modules/nf-core/samtools/index/main'
 
 include { FIX_BAM_FLAGS_TAGS } from '../../modules/local/fix_bam_flags_tags'
-include { CROSS_LINKS } from '../../modules/local/xlink'
+include { MAKE_XLINK_TRACKS } from '../../modules/local/make_xlink_tracks'
 include { NMS } from '../../modules/local/nms'
 
 workflow ALIGN_NMS_DEDUP {
     take:
     reads                 // channel: [ val(meta), path(reads)  ]
-    rnalib_index           // value: path (STAR index)
+    rnalib_index          // value: path (STAR index)
     genome_index          // value: paht(STAR index)
 
     main:
@@ -60,8 +60,8 @@ workflow ALIGN_NMS_DEDUP {
     versions = versions.mix(FIX_BAM_FLAGS_TAGS.out.versions.first())
 
     // Generate crosslinks
-    CROSS_LINKS(FIX_BAM_FLAGS_TAGS.out.alignment)
-    versions = versions.mix(CROSS_LINKS.out.versions.first())
+    MAKE_XLINK_TRACKS(FIX_BAM_FLAGS_TAGS.out.alignment)
+    versions = versions.mix(MAKE_XLINK_TRACKS.out.versions.first())
 
     emit:
     // Alignment
@@ -79,8 +79,8 @@ workflow ALIGN_NMS_DEDUP {
     alignments = FIX_BAM_FLAGS_TAGS.out.alignment
 
     // Cross-link sites
-    xlink_bed = CROSS_LINKS.out.bed
-    xlink_bedgraph = CROSS_LINKS.out.bedgraph
+    xlink_bed = MAKE_XLINK_TRACKS.out.bed
+    xlink_bedgraph = MAKE_XLINK_TRACKS.out.bedgraph
 
     versions = versions.ifEmpty(null) // channel: [ path(versions.yml) ]
 }
