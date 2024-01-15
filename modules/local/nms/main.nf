@@ -11,6 +11,7 @@ process NMS {
     
     output:
     tuple val(meta), path("${meta.id}.nms.bam"), path("${meta.id}.nms.bam.bai"), emit: alignment 
+    path "${meta.id}.unmapped.fastq.gz"                                        , emit: unmapped
     path "${meta.id}_nms.tsv"                                                  , emit: summary
     path "versions.yml"                                                        , emit: versions
 
@@ -25,7 +26,8 @@ process NMS {
         rnalib.bam \\
         genome.bam \\
         ${meta.id}_nms.tsv \\
-        ${meta.id}.nms.bam
+        ${meta.id}.nms.bam \\
+        ${meta.id}.unmapped.fastq.gz
 
     cat <<-END_VERSIONS > versions.yml
     "${task.process}":

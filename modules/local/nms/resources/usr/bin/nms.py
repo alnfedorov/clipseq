@@ -2,10 +2,41 @@
 import argparse
 import pysam
 import re
+import gzip
 from pathlib import Path
 from itertools import chain
 from dataclasses import dataclass
 from typing import Any
+
+
+@dataclass(slots=True)
+class ReadNamesIndex:
+    index: dict[str, Any]
+    total: int = 0
+    separator: str = ":"
+
+    def _traverse(self, read: str) -> tuple[set[str], str]:
+        *pieces, prelast, last = read.split(self.separator)
+
+        index = self.index
+        for p in pieces:
+            index = index.setdefault(p, {})
+        index = index.setdefault(prelast, set())
+
+        return index, last
+
+    def add(self, read: str, ensure_absent: bool = True):
+        index, last = self._traverse(read)
+
+        if ensure_absent:
+            assert last not in index, (read, last)
+        index.add(last)
+
+        self.total += 1
+    
+    def __contains__(self, read: str):
+        index, last = self._traverse(read)
+        return last in index
 
 
 @dataclass(slots=True)
@@ -77,7 +108,6 @@ def nms(
             summary["NMS: genome"] += 1
             to_write = genome
         # ------------------------------------------------------------
-
         case (_, _):  # Ambiguous
             summary["NMS: ambiguous"] += 1
             to_write = rnalib
@@ -123,14 +153,11 @@ parser.add_argument("threads", type=int, help="Number of threads to use")
 parser.add_argument("reads", type=Path, help="Sequenced reads (.fastq.gz)")
 parser.add_argument("rnalib", type=Path, help="Alignment to the rnalib library (.bam)")
 parser.add_argument("genome", type=Path, help="Alignment to the genome (.bam)")
-parser.add_argument(
-    "logs", type=Path, help="Save NMS summary stats to the given file (.yaml)"
-)
-parser.add_argument(
-    "alignments", type=Path, help="Save NMS results to the given file (.bam)"
-)
+parser.add_argument("logs", type=Path, help="Save NMS summary stats to the given file (.yaml)")
+parser.add_argument("alignments", type=Path, help="Save NMS results to the given file (.bam)")
+parser.add_argument("unmapped", type=Path, help="Save unmapped reads to the given file (.fastq.gz)")
 
-# args = ["64", "reads.fastq.gz", "rnalib.bam", "genome.bam", "stats.tsv", "nms.bam"]
+# args = ["64", "reads.fastq.gz", "rnalib.bam", "genome.bam", "stats.tsv", "nms.bam", "unmapped.fastq.gz"]
 # parser = parser.parse_args(args)
 
 parser = parser.parse_args()
@@ -163,6 +190,7 @@ summary = {
     "NMS: genome": 0,
     "NMS: ambiguous": 0,
 }
+mapped_index = ReadNamesIndex(index={})
 
 batches = PairedData(
     rnalib=batch_reads(sorted_by_name.rnalib), genome=batch_reads(sorted_by_name.genome)
@@ -172,31 +200,38 @@ cursor = PairedData(rnalib=next(batches.rnalib, None), genome=next(batches.genom
 while True:
     if cursor.rnalib is None or cursor.genome is None:
         break
-
+    
+    # By default, samtools sorts input strings in a non-lexicographic format.
     lib_key = fancy_samtools_string_key(cursor.rnalib[0].query_name)
     gn_key = fancy_samtools_string_key(cursor.genome[0].query_name)
 
     if lib_key == gn_key:
         nms(cursor.rnalib, cursor.genome, saveto, summary)
+        mapped_index.add(cursor.rnalib[0].query_name)
         cursor.rnalib = next(batches.rnalib, None)
         cursor.genome = next(batches.genome, None)
     elif lib_key < gn_key:
         nms(cursor.rnalib, [], saveto, summary)
+        mapped_index.add(cursor.rnalib[0].query_name)
         cursor.rnalib = next(batches.rnalib, None)
     else:
         nms([], cursor.genome, saveto, summary)
+        mapped_index.add(cursor.genome[0].query_name)
         cursor.genome = next(batches.genome, None)
 
 # Left-over alignments
 while cursor.rnalib is not None:
     nms(cursor.rnalib, [], saveto, summary)
+    mapped_index.add(cursor.rnalib[0].query_name)
     cursor.rnalib = next(batches.rnalib, None)
 
 while cursor.genome is not None:
     nms([], cursor.genome, saveto, summary)
+    mapped_index.add(cursor.genome[0].query_name)
     cursor.genome = next(batches.genome, None)
 
 assert cursor.rnalib is None and cursor.genome is None
+assert mapped_index.total == sum(summary.values())
 
 saveto.close()
 
@@ -205,13 +240,18 @@ sorted_by_name.rnalib.unlink()
 sorted_by_name.genome.unlink()
 del sorted_by_name
 
-# Calculate the total number of reads
-total = 0
-with pysam.FastxFile(parser.reads, persist=False) as fastq:
-    for r in fastq:
-        total += 1
-summary["Unmapped"] = total - sum(summary.values())
-assert summary["Unmapped"] >= 0
+# Calculate the total number of unmapped reads & save them
+unmapped, total = 0, 0
+with gzip.open(parser.unmapped, 'wt') as saveto:
+    with pysam.FastxFile(parser.reads, persist=False) as fastq:
+        for r in fastq:
+            total += 1
+            if r.name not in mapped_index:
+                saveto.write(str(r) + '\n')
+                unmapped += 1
+
+summary["Unmapped"] = unmapped
+assert summary["Unmapped"] >= 0 and summary["Unmapped"] + mapped_index.total == total
 
 # Sort & Index
 tmpsort = parser.alignments.with_suffix(f".sorted.bam")
